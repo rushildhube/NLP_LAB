@@ -72,8 +72,8 @@ def main():
         dataset = load_dataset("cnn_dailymail", "3.0.0", cache_dir=str(CACHE_DIR / "datasets"))
 
         # Use a larger subset to improve fine-tuning quality while staying practical locally
-        train_data = dataset["train"].select(range(10000))
-        val_data = dataset["validation"].select(range(2000))
+        train_data = dataset["train"].select(range(20000))
+        val_data = dataset["validation"].select(range(5000))
         logger.info("Dataset loaded successfully: train=%d, validation=%d", len(train_data), len(val_data))
     except Exception as e:
         logger.exception("Failed to load dataset")
