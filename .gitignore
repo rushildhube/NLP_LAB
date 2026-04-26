@@ -1,0 +1,41 @@
+# Python cache and tooling
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Project artifacts (model/data outputs)
+Mini_Project/cache/
+Mini_Project/model/
+Mini_Project/results/
+Mini_Project/*.log
+Mini_Project/*.tmp
+
+# LaTeX build outputs
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.run.xml
+*.synctex.gz
+*.toc
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.vscode/
