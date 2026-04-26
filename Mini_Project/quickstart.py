@@ -62,7 +62,7 @@ def show_workflow():
     ─────────────────────────────────
     $ python Mini_Project/train.py
     
-    • Downloads CNN/DailyMail dataset (3K train, 800 val samples)
+    • Downloads CNN/DailyMail dataset (5K train, 1K val samples)
     • Fine-tunes BART with learning rate warmup
     • Implements early stopping to prevent overfitting
     • Saves model to Mini_Project/model/

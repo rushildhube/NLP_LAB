@@ -13,7 +13,13 @@ import time
 import torch
 from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-from transformers import Trainer, TrainingArguments, EarlyStoppingCallback
+from transformers import (
+    DataCollatorForSeq2Seq,
+    EarlyStoppingCallback,
+    Seq2SeqTrainer,
+    Seq2SeqTrainingArguments,
+    set_seed,
+)
 
 from common import CACHE_DIR, MODEL_DIR, RESULTS_DIR
 
@@ -51,6 +57,7 @@ def setup_logging():
 def main():
     logger = setup_logging()
     start_time = time.perf_counter()
+    set_seed(42)
 
     logger.info("Starting BART fine-tuning run")
     logger.info("Python %s | PyTorch %s | Platform %s", sys.version.split()[0], torch.__version__, platform.platform())
@@ -64,9 +71,9 @@ def main():
         # CNN/DailyMail dataset (articles + summaries)
         dataset = load_dataset("cnn_dailymail", "3.0.0", cache_dir=str(CACHE_DIR / "datasets"))
 
-        # Use SMALL subset (important for local systems)
-        train_data = dataset["train"].select(range(3000))
-        val_data = dataset["validation"].select(range(800))
+        # Use a larger subset to improve fine-tuning quality while staying practical locally
+        train_data = dataset["train"].select(range(10000))
+        val_data = dataset["validation"].select(range(2000))
         logger.info("Dataset loaded successfully: train=%d, validation=%d", len(train_data), len(val_data))
     except Exception as e:
         logger.exception("Failed to load dataset")
@@ -82,6 +89,9 @@ def main():
         model_cache_dir = CACHE_DIR / "models"
         tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=str(model_cache_dir))
         model = AutoModelForSeq2SeqLM.from_pretrained(model_name, cache_dir=str(model_cache_dir))
+        model.config.use_cache = False
+        if torch.cuda.is_available():
+            model.gradient_checkpointing_enable()
         total_parameters = sum(parameter.numel() for parameter in model.parameters())
         trainable_parameters = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
         logger.info(
@@ -117,8 +127,11 @@ def main():
             padding="max_length"
         )
 
-        # Labels are expected outputs
-        inputs["labels"] = targets["input_ids"]
+        # Ignore padded label tokens in loss computation.
+        inputs["labels"] = [
+            [token_id if token_id != tokenizer.pad_token_id else -100 for token_id in sequence]
+            for sequence in targets["input_ids"]
+        ]
 
         return inputs
 
@@ -133,7 +146,7 @@ def main():
 # STEP 4: CONFIGURE TRAINING
     logger.info("Configuring training arguments...")
 
-    training_arguments_parameters = inspect.signature(TrainingArguments.__init__).parameters
+    training_arguments_parameters = inspect.signature(Seq2SeqTrainingArguments.__init__).parameters
     training_strategy_key = "evaluation_strategy" if "evaluation_strategy" in training_arguments_parameters else "eval_strategy"
     logger.info("Using training strategy argument: %s", training_strategy_key)
     tensorboard_available = importlib.util.find_spec("tensorboard") is not None
@@ -146,7 +159,7 @@ def main():
         "output_dir": str(RESULTS_DIR),
         "per_device_train_batch_size": 2,
         "per_device_eval_batch_size": 2,
-        "num_train_epochs": 3,
+        "num_train_epochs": 5,
         training_strategy_key: "steps",
         "eval_steps": 100,
         "save_strategy": "steps",
@@ -156,16 +169,27 @@ def main():
         "metric_for_best_model": "eval_loss",
         "greater_is_better": False,
         "logging_steps": 50,
-        "learning_rate": 5e-5,
-        "warmup_steps": 500,
+        "learning_rate": 3e-5,
+        "warmup_ratio": 0.06,
         "weight_decay": 0.01,
-        "gradient_accumulation_steps": 2,
+        "gradient_accumulation_steps": 4,
+        "lr_scheduler_type": "cosine",
+        "max_grad_norm": 1.0,
+        "optim": "adamw_torch",
         "fp16": torch.cuda.is_available(),
         "report_to": ["tensorboard"] if tensorboard_available else [],
         "run_name": "bart-finetuning",
         "push_to_hub": False,
+        "seed": 42,
     }
-    training_args = TrainingArguments(**training_args_kwargs)
+    training_args_kwargs.update({
+        "predict_with_generate": True,
+        "generation_max_length": 120,
+        "generation_num_beams": 4,
+        "label_smoothing_factor": 0.1,
+        "gradient_checkpointing": True,
+    })
+    training_args = Seq2SeqTrainingArguments(**training_args_kwargs)
 
 # -------------------------
 # STEP 5: TRAINER WITH EARLY STOPPING
@@ -173,15 +197,22 @@ def main():
     logger.info("Setting up trainer with early stopping...")
     
     early_stopping = EarlyStoppingCallback(
-        early_stopping_patience=2,  # Stop if no improvement for 2 evaluations
+        early_stopping_patience=3,  # Stop if no improvement for 3 evaluations
         early_stopping_threshold=0.001
     )
 
-    trainer = Trainer(
+    data_collator = DataCollatorForSeq2Seq(
+        tokenizer=tokenizer,
+        model=model,
+        pad_to_multiple_of=8 if torch.cuda.is_available() else None,
+    )
+
+    trainer = Seq2SeqTrainer(
         model=model,
         args=training_args,
         train_dataset=train_data,
         eval_dataset=val_data,
+        data_collator=data_collator,
         callbacks=[early_stopping],
     )
 

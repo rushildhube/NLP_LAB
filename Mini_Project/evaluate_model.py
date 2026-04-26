@@ -5,6 +5,8 @@
 import logging
 import json
 import time
+import textwrap
+from pathlib import Path
 from tqdm import tqdm
 from datasets import load_dataset
 import evaluate
@@ -37,6 +39,10 @@ def main():
     try:
         tokenizer, model, device = load_model_and_tokenizer()
         logger.info(f"Model loaded on device: {device}")
+        if hasattr(model, "generation_config"):
+            model.generation_config.max_length = 130
+            model.generation_config.min_length = 45
+            model.generation_config.num_beams = 5
     except Exception as e:
         logger.error(f"Failed to load model: {e}")
         raise
@@ -45,17 +51,32 @@ def main():
     logger.info("Loading evaluation metrics...")
     try:
         rouge = evaluate.load("rouge")
-        bleu = evaluate.load("bleu")
-        meteor = evaluate.load("meteor")
-        logger.info("Metrics loaded: ROUGE, BLEU, METEOR")
     except Exception as e:
-        logger.warning(f"Could not load all metrics: {e}. Using ROUGE only.")
+        logger.error(
+            "Failed to load ROUGE metric. Install the dependency first with: pip install rouge_score"
+        )
+        raise
+
+    try:
+        bleu = evaluate.load("bleu")
+    except Exception as e:
+        logger.warning(f"BLEU metric could not be loaded: {e}")
         bleu = None
+
+    try:
+        meteor = evaluate.load("meteor")
+    except Exception as e:
+        logger.warning(f"METEOR metric could not be loaded: {e}")
         meteor = None
+
+    logger.info("Metrics loaded: ROUGE%s%s",
+                ", BLEU" if bleu else "",
+                ", METEOR" if meteor else "")
 
     predictions = []
     references = []
     generation_times = []
+    source_indices = []
 
 # -------------------------
 # GENERATE SUMMARIES WITH PROGRESS
@@ -69,17 +90,26 @@ def main():
                 tokenizer=tokenizer,
                 model=model,
                 device=device,
+                max_summary_length=130,
+                min_summary_length=45,
+                num_beams=5,
+                length_penalty=1.15,
+                repetition_penalty=1.1,
             )
             gen_time = time.time() - gen_start
             generation_times.append(gen_time)
             
             predictions.append(pred)
             references.append(item["highlights"])
+            source_indices.append(i)
         except Exception as e:
             logger.warning(f"Failed to generate summary for sample {i}: {e}")
             continue
 
     logger.info(f"Generated {len(predictions)} summaries")
+    if not predictions:
+        logger.error("No summaries were generated successfully; cannot compute metrics.")
+        return
 
 # -------------------------
 # CALCULATE MULTIPLE METRICS
@@ -129,7 +159,7 @@ def main():
     
     # Calculate ROUGE-1 per sample for error analysis
     rouge_1_scores = []
-    for pred, ref in zip(predictions, references):
+    for pred, ref in tqdm(list(zip(predictions, references)), desc="Scoring worst cases"):
         try:
             score = rouge.compute(
                 predictions=[pred],
@@ -145,40 +175,82 @@ def main():
 # -------------------------
 # PRINT RESULTS SUMMARY
 # -------------------------
-    print("\n" + "="*70)
-    print("EVALUATION RESULTS SUMMARY")
-    print("="*70)
-    
-    print(f"\nDataset: {len(predictions)} samples")
-    print(f"Avg generation time: {np.mean(generation_times):.2f}s per sample")
-    
-    print("\n" + "-"*70)
-    print("ROUGE SCORES:")
-    print("-"*70)
-    if "ROUGE" in metrics_results:
-        for key, value in metrics_results["ROUGE"].items():
-            print(f"  {key}: {value:.4f}")
-    
-    if "BLEU" in metrics_results:
-        print(f"\nBLEU Score: {metrics_results['BLEU']['bleu']:.4f}")
-    
-    if "METEOR" in metrics_results:
-        print(f"METEOR Score: {metrics_results['METEOR']['meteor']:.4f}")
-    
-    print("\n" + "-"*70)
-    print("TOP 3 WORST PREDICTIONS (by ROUGE-1):")
-    print("-"*70)
+    avg_generation_time = float(np.mean(generation_times)) if generation_times else 0.0
+    rouge_results = metrics_results.get("ROUGE", {})
+    bleu_score = metrics_results.get("BLEU", {}).get("bleu")
+    meteor_score = metrics_results.get("METEOR", {}).get("meteor")
+
+    def format_metric_rows():
+        rows = []
+        for name in ["rouge1", "rouge2", "rougeL", "rougeLsum"]:
+            if name in rouge_results:
+                rows.append(f"| {name:<9} | {rouge_results[name]:.4f} |")
+        return "\n".join(rows) if rows else "| rouge | unavailable |"
+
+    worst_blocks = []
     for rank, idx in enumerate(worst_indices, 1):
-        print(f"\n{rank}. Sample #{idx} (ROUGE-1: {rouge_1_scores[idx]:.4f})")
-        print(f"   Article: {dataset[idx]['article'][:100]}...")
-        print(f"   Reference: {references[idx][:100]}...")
-        print(f"   Prediction: {predictions[idx][:100]}...")
-    
+        sample_index = source_indices[idx]
+        worst_blocks.append(
+            textwrap.dedent(
+                f"""
+                ### {rank}. Sample #{sample_index}  |  ROUGE-1: {rouge_1_scores[idx]:.4f}
+                **Article:** {dataset[sample_index]['article'][:220].replace('\n', ' ')}...
+                
+                **Reference:** {references[idx][:220].replace('\n', ' ')}...
+                
+                **Prediction:** {predictions[idx][:220].replace('\n', ' ')}...
+                """
+            ).strip()
+        )
+
+    report_text = textwrap.dedent(
+        f"""
+        # Evaluation Results Summary
+
+        ## Dataset
+        - Samples evaluated: {len(predictions)}
+        - Average generation time: {avg_generation_time:.2f}s per sample
+
+        ## ROUGE Scores
+        | Metric | Score |
+        |---|---:|
+        {format_metric_rows()}
+
+        ## Additional Metrics
+        - BLEU: {f'{bleu_score:.4f}' if bleu_score is not None else 'unavailable'}
+        - METEOR: {f'{meteor_score:.4f}' if meteor_score is not None else 'unavailable'}
+
+        ## Top 3 Worst Predictions by ROUGE-1
+        {'\n\n'.join(worst_blocks)}
+        """
+    ).strip() + "\n"
+
+    print("\n" + "=" * 70)
+    print("EVALUATION RESULTS SUMMARY")
+    print("=" * 70)
+    print(f"Dataset: {len(predictions)} samples")
+    print(f"Avg generation time: {avg_generation_time:.2f}s per sample")
+    print("\nROUGE Scores")
+    print("------------")
+    print(format_metric_rows())
+    print("\nAdditional Metrics")
+    print("-------------------")
+    print(f"BLEU: {f'{bleu_score:.4f}' if bleu_score is not None else 'unavailable'}")
+    print(f"METEOR: {f'{meteor_score:.4f}' if meteor_score is not None else 'unavailable'}")
+    print("\nTop 3 Worst Predictions")
+    print("------------------------")
+    for rank, idx in enumerate(worst_indices, 1):
+        sample_index = source_indices[idx]
+        print(f"{rank}. Sample #{sample_index} | ROUGE-1: {rouge_1_scores[idx]:.4f}")
+        print(f"   Article: {dataset[sample_index]['article'][:140].replace(chr(10), ' ')}...")
+        print(f"   Reference: {references[idx][:140].replace(chr(10), ' ')}...")
+        print(f"   Prediction: {predictions[idx][:140].replace(chr(10), ' ')}...")
+        print()
+
     # Save detailed results
-    print("\n" + "-"*70)
     results_dict = {
         "metrics": metrics_results,
-        "avg_generation_time": float(np.mean(generation_times)),
+        "avg_generation_time": avg_generation_time,
         "total_samples": len(predictions),
         "sample_wise_rouge1": [float(s) for s in rouge_1_scores],
     }
@@ -187,6 +259,11 @@ def main():
     with open(results_file, "w") as f:
         json.dump(results_dict, f, indent=2, default=str)
     logger.info(f"Results saved to {results_file}")
+
+    report_file = MODEL_DIR.parent / "evaluation_report.md"
+    with open(report_file, "w", encoding="utf-8") as f:
+        f.write(report_text)
+    logger.info(f"Pretty report saved to {report_file}")
     
     print("="*70)
     elapsed = time.time() - start_time

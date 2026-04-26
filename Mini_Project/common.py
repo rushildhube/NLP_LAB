@@ -32,8 +32,12 @@ def generate_summary(
     model,
     device,
     max_input_length: int = 512,
-    max_summary_length: int = 100,
-    num_beams: int = 4,
+    max_summary_length: int = 130,
+    min_summary_length: int = 45,
+    num_beams: int = 5,
+    length_penalty: float = 1.15,
+    no_repeat_ngram_size: int = 3,
+    repetition_penalty: float = 1.1,
 ) -> str:
     """Generate a summary using shared decoding settings across scripts."""
     inputs = tokenizer(
@@ -48,7 +52,11 @@ def generate_summary(
         output = model.generate(
             **inputs,
             max_length=max_summary_length,
+            min_length=min_summary_length,
             num_beams=num_beams,
+            length_penalty=length_penalty,
+            no_repeat_ngram_size=no_repeat_ngram_size,
+            repetition_penalty=repetition_penalty,
             early_stopping=True,
         )
 
