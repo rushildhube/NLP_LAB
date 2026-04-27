@@ -1,0 +1,6 @@
+text,label,cleaned_text,label_encoded
+"I absolutely loved the movie, it was fantastic and inspiring!",positive,absolutely loved movie fantastic inspiring,1
+The service was slow and the food was disappointing.,negative,service slow food disappointing,0
+This product works well and saves a lot of time.,positive,product work well save lot time,1
+The app crashed twice and the experience was frustrating.,negative,app crashed twice experience frustrating,0
+Customer support was helpful and resolved my issue quickly.,positive,customer support helpful resolved issue quickly,1
