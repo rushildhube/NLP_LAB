@@ -20,7 +20,39 @@ def preprocess_text_for_summarization(text: str) -> str:
     normalized = re.sub(r"\t+", " ", normalized)
     normalized = re.sub(r"[ \u00A0]+", " ", normalized)
 
-    lines = [line.strip() for line in normalized.split("\n") if line.strip()]
+    # Remove common webpage boilerplate and support/footer fragments that are not part of the article.
+    boilerplate_patterns = (
+        r"back to the page you came from",
+        r"for confidential support",
+        r"call the samaritans",
+        r"visit a local samaritans branch",
+        r"see www\.samaritans\.org for details",
+        r"www\.[a-z0-9\-_.]+\.[a-z]{2,}(?:/[\w\-./?%&=]*)?",
+        r"^read more.*$",
+        r"^advertisement.*$",
+        r"^cookie(s)? policy.*$",
+        r"^sign up.*$",
+        r"^subscribe.*$",
+        r"^share this.*$",
+        r"^more from.*$",
+    )
+
+    scrubbed_lines = []
+    for raw_line in normalized.split("\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        lowered = line.lower()
+        if any(re.search(pattern, lowered, flags=re.IGNORECASE) for pattern in boilerplate_patterns):
+            continue
+
+        if re.fullmatch(r"https?://\S+", line) or re.fullmatch(r"www\.\S+", line, flags=re.IGNORECASE):
+            continue
+
+        scrubbed_lines.append(line)
+
+    lines = scrubbed_lines
     bullet_pattern = re.compile(r"^(?:[-*•]|\d+[.)]|[a-zA-Z][.)])\s+")
 
     prose_parts = []
@@ -47,21 +79,13 @@ def preprocess_text_for_summarization(text: str) -> str:
     return merged
 
 
-def build_summary_prompt(cleaned_text: str) -> str:
-    """Create a compact instruction prefix to bias the model toward concise summaries."""
-    line_count = cleaned_text.count("\n") + 1
-    structured_hint = ""
-    if line_count >= 6:
-        structured_hint = " The input may include task-like structure; merge related items into coherent prose."
-
-    instruction = (
-        "Summarize the following text in 3 to 4 concise sentences. "
-        "Focus on key points only, remove redundancy, and avoid repeating phrases."
-        f"{structured_hint}"
-        "\n\n"
-        "Text:\n"
-    )
-    return f"{instruction}{cleaned_text}"
+def build_summary_prompt(cleaned_text: str, summary_style: str = "balanced") -> str:
+    """Build a BART-friendly prompt while avoiding instruction text leakage in outputs."""
+    if summary_style == "bullet_mode":
+        return f"summarize task notes: {cleaned_text}"
+    if summary_style in {"crisp", "ultra_short"}:
+        return f"summarize concisely: {cleaned_text}"
+    return f"summarize: {cleaned_text}"
 
 
 def _split_sentences(text: str) -> List[str]:
@@ -75,7 +99,7 @@ def _normalize_for_overlap(text: str) -> List[str]:
     return re.findall(r"[a-z0-9]+", text.lower())
 
 
-def _deduplicate_sentences(text: str, similarity_threshold: float = 0.78) -> str:
+def _deduplicate_sentences(text: str, similarity_threshold: float = 0.9) -> str:
     sentences = _split_sentences(text)
     kept_sentences: List[str] = []
     kept_token_sets: List[set] = []
@@ -152,7 +176,7 @@ def _candidate_score(candidate: str, source_text: str, target_words: int) -> flo
     extractive_penalty = _extractiveness_ratio(candidate, source_text)
 
     sentence_count = max(1, len(_split_sentences(candidate)))
-    sentence_balance_penalty = 0.0 if 3 <= sentence_count <= 4 else 0.25
+    sentence_balance_penalty = 0.15 if sentence_count < 2 else 0.0
 
     repeat_penalty = 0.0
     seen = set()
@@ -200,7 +224,7 @@ def _generate_once(
                     no_repeat_ngram_size=no_repeat_ngram_size,
                     repetition_penalty=repetition_penalty,
                     encoder_no_repeat_ngram_size=encoder_no_repeat_ngram_size,
-                    early_stopping=True,
+                    early_stopping=False,
                     do_sample=False,
                 )
         else:
@@ -213,7 +237,7 @@ def _generate_once(
                 no_repeat_ngram_size=no_repeat_ngram_size,
                 repetition_penalty=repetition_penalty,
                 encoder_no_repeat_ngram_size=encoder_no_repeat_ngram_size,
-                early_stopping=True,
+                early_stopping=False,
                 do_sample=False,
             )
 
@@ -287,7 +311,7 @@ def generate_summary(
     chunks = _chunk_text_for_model(tokenizer, cleaned_text, max_input_length=max_input_length)
     intermediate_summaries: List[str] = []
     for chunk in chunks:
-        prompt = build_summary_prompt(chunk)
+        prompt = build_summary_prompt(chunk, summary_style=summary_style)
         summary = _generate_once(
             prompt=prompt,
             tokenizer=tokenizer,
@@ -309,19 +333,90 @@ def generate_summary(
     if not intermediate_summaries:
         return ""
 
+    # Root-cause fix: if input fits a single chunk, avoid summarizing the summary again.
+    # Use multi-candidate, length-aware decoding so output length responds to max/min controls.
     if len(intermediate_summaries) == 1:
-        combined_source = cleaned_text
-        fusion_input = intermediate_summaries[0]
-    else:
-        combined_source = cleaned_text
-        fusion_input = " ".join(intermediate_summaries)
+        prompt = build_summary_prompt(cleaned_text, summary_style=summary_style)
 
-    prompt = build_summary_prompt(fusion_input)
+        gap = max(0, max_summary_length - min_summary_length)
+        target_word_count = max(min_summary_length, min(max_summary_length, min_summary_length + int(gap * 0.45)))
+        length_min_grid = (
+            max(12, min_summary_length),
+            max(12, min_summary_length + int(gap * 0.2)),
+            max(12, min_summary_length + int(gap * 0.35)),
+            max(12, min_summary_length + int(gap * 0.5)),
+        )
+        length_penalty_grid = (
+            max(0.82, length_penalty - 0.55),
+            max(0.92, length_penalty - 0.4),
+            max(1.0, length_penalty - 0.25),
+            max(1.08, length_penalty - 0.12),
+        )
+
+        local_candidate_count = max(2, min(candidate_count + 1, 5))
+        candidates: List[str] = []
+        for idx in range(local_candidate_count):
+            candidate = _generate_once(
+                prompt=prompt,
+                tokenizer=tokenizer,
+                model=model,
+                device=device,
+                max_input_length=max_input_length,
+                max_summary_length=max_summary_length,
+                min_summary_length=min(length_min_grid[idx], max_summary_length - 4),
+                num_beams=max(6, num_beams),
+                length_penalty=float(length_penalty_grid[idx]),
+                no_repeat_ngram_size=no_repeat_ngram_size,
+                repetition_penalty=max(1.05, repetition_penalty - 0.08),
+                encoder_no_repeat_ngram_size=encoder_no_repeat_ngram_size,
+            )
+            candidate = _deduplicate_sentences(candidate)
+            if candidate:
+                candidates.append(candidate)
+
+        if not candidates:
+            return _deduplicate_sentences(intermediate_summaries[0])
+
+        scored_candidates = sorted(
+            (
+                (_candidate_score(candidate, cleaned_text, target_word_count), candidate)
+                for candidate in candidates
+            ),
+            key=lambda item: item[0],
+            reverse=True,
+        )
+
+        best_single = scored_candidates[0][1]
+        min_word_floor = max(10, int(min_summary_length * 0.9))
+        if len(best_single.split()) < min_word_floor:
+            fallback = _generate_once(
+                prompt=prompt,
+                tokenizer=tokenizer,
+                model=model,
+                device=device,
+                max_input_length=max_input_length,
+                max_summary_length=max_summary_length,
+                min_summary_length=min(max_summary_length - 4, max(min_summary_length, min_summary_length + int(gap * 0.4))),
+                num_beams=max(8, num_beams),
+                length_penalty=max(0.78, length_penalty - 0.62),
+                no_repeat_ngram_size=no_repeat_ngram_size,
+                repetition_penalty=max(1.02, repetition_penalty - 0.1),
+                encoder_no_repeat_ngram_size=encoder_no_repeat_ngram_size,
+            )
+            fallback = _deduplicate_sentences(fallback)
+            if fallback:
+                return fallback
+        return best_single
+
+    combined_source = cleaned_text
+    fusion_input = " ".join(intermediate_summaries)
+
+    prompt = build_summary_prompt(fusion_input, summary_style=summary_style)
 
     source_word_count = max(1, len(_normalize_for_overlap(cleaned_text)))
-    target_word_count = max(24, min(120, int(source_word_count * 0.2)))
-    target_max_len = min(max_summary_length, max(52, int(target_word_count * 1.3)))
-    target_min_len = max(18, min(min_summary_length, target_max_len - 8))
+    target_min_len = max(12, min_summary_length)
+    target_max_len = max(target_min_len + 4, max_summary_length)
+    target_word_count = max(target_min_len, min(target_max_len, (target_min_len + target_max_len) // 2))
 
     candidate_count = max(1, min(candidate_count, 5))
     decoding_grid: Sequence[Tuple[float, float, int]] = (

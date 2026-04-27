@@ -1,307 +1,265 @@
-# Fine-Tuned Transformer for Abstractive Summarization
+# Mini Project: Abstractive Summarization with BART
 
-## 📋 Problem Statement
-Fine-tune a pre-trained transformer model for **abstractive summarization** on a relevant dataset.
+This project implements an end-to-end summarization system using a fine-tuned facebook/bart-large-cnn model on CNN/DailyMail.
 
-## ✅ Solution Overview
+It includes training, evaluation, a Streamlit app, and upgraded inference logic for stronger summaries without retraining.
 
-This project implements a complete pipeline to fine-tune **BART (facebook/bart-large-cnn)**, a pre-trained sequence-to-sequence transformer, on the **CNN/DailyMail** dataset for abstractive text summarization.
+## Scope
 
-### Architecture & Components
+- Train a seq2seq transformer for abstractive summarization.
+- Evaluate with ROUGE and optional BLEU/METEOR.
+- Run interactive summarization in Streamlit.
+- Improve quality at inference time without retraining.
 
-```
-Mini_Project/
-├── train.py              # Fine-tuning script with early stopping
-├── evaluate_model.py     # Comprehensive evaluation with multiple metrics
-├── app.py                # Streamlit web application for inference
-├── common.py             # Shared utilities (model loading, generation)
-└── README.md             # This file
-```
+## Project Files
 
----
+- train.py: fine-tuning pipeline.
+- evaluate_model.py: offline evaluation and report generation.
+- app.py: Streamlit interface.
+- common.py: shared paths, preprocessing, prompting, generation.
+- quickstart.py: dependency check and workflow helper.
+- model/: saved model/tokenizer artifacts.
+- results/: training logs and checkpoints.
+- evaluation_results.json: machine-readable metrics.
+- evaluation_report.md: human-readable evaluation summary.
 
-## 🔧 Setup & Installation
+## Setup
 
-### Requirements
-All dependencies are in `requirements.txt`. Install them:
+Install dependencies from workspace root:
 
 ```bash
-cd "d:\NLP LAB"
 pip install -r requirements.txt
 ```
 
-### Key Dependencies
-- **transformers**: Pre-trained BART model
-- **datasets**: CNN/DailyMail dataset loading
-- **torch**: Deep learning framework
-- **evaluate**: ROUGE, BLEU, METEOR metrics
-- **streamlit**: Web UI for inference
+Recommended:
 
----
+- Use an activated Python virtual environment.
+- Use CUDA-enabled PyTorch for faster training and inference.
 
-## 🚀 How to Use
+## Workflow
 
-### 1️⃣ Fine-Tune the Model
+### Train
+
 ```bash
 python Mini_Project/train.py
 ```
 
-**What it does:**
-- Loads CNN/DailyMail dataset (3,000 training samples, 800 validation samples)
-- Fine-tunes BART on summarization task
-- Implements early stopping (stops if no improvement for 2 epochs)
-- Saves best model to `Mini_Project/model/`
-- Saves training config to `Mini_Project/model/training_config.json`
+Current training behavior:
 
-**Training Configuration:**
-- **Base Model**: facebook/bart-large-cnn (pre-trained)
-- **Learning Rate**: 5e-5 (typical for fine-tuning)
-- **Batch Size**: 2 (low-memory systems)
-- **Epochs**: 3 (with early stopping)
-- **Warmup Steps**: 500
-- **Gradient Accumulation**: 2 steps
-- **Evaluation**: Every 100 steps
-- **Mixed Precision**: Auto-enabled on GPU
+- Dataset: CNN/DailyMail with cache under Mini_Project/cache/datasets.
+- Subset sizes: 15000 train, 3000 validation.
+- Base model: facebook/bart-large-cnn.
+- Token lengths: source 512, target 128.
+- Auto-resume from latest checkpoint in Mini_Project/results.
 
-**Expected Output:**
-```
-✅ Training complete. Model saved in Mini_Project/model/
-```
+Training hyperparameters:
 
----
+| Parameter | Value |
+| --- | --- |
+| epochs | 5 |
+| train batch size (per device) | 2 |
+| eval batch size (per device) | 2 |
+| gradient accumulation | 4 |
+| learning rate | 3e-5 |
+| warmup ratio | 0.06 |
+| weight decay | 0.01 |
+| scheduler | cosine |
+| label smoothing | 0.1 |
+| generation max length (eval) | 120 |
+| generation beams (eval) | 4 |
 
-### 2️⃣ Evaluate the Fine-Tuned Model
+Early stopping and checkpointing:
+
+- Early stopping patience: 3 eval checks.
+- Early stopping threshold: 0.001.
+- Save/evaluate every 100 steps.
+- Keep last 3 checkpoints.
+
+Training outputs:
+
+- Mini_Project/model (model, tokenizer, training_config.json).
+- Mini_Project/results/training.log.
+- Mini_Project/results/training_summary.json.
+
+### Evaluate
+
 ```bash
 python Mini_Project/evaluate_model.py
 ```
 
-**What it does:**
-- Loads 200 test samples from CNN/DailyMail
-- Generates abstractive summaries using the fine-tuned model
-- Computes multiple evaluation metrics:
-  - **ROUGE-1, ROUGE-2, ROUGE-L**: Overlap-based metrics (standard for summarization)
-  - **BLEU**: Machine translation metric (if available)
-  - **METEOR**: Semantic similarity metric (if available)
-- Performs error analysis (shows worst 3 predictions)
-- Saves detailed results to `evaluation_results.json`
+Current evaluation behavior:
 
-**Expected Metrics:**
-- ROUGE-1: 0.35-0.45 (after fine-tuning)
-- ROUGE-2: 0.15-0.25
-- ROUGE-L: 0.32-0.42
+- Evaluates on test[:200] from CNN/DailyMail.
+- Calls shared generate_summary from common.py.
+- Uses compact decoding defaults aligned with current inference pipeline.
+- Computes ROUGE, and optionally BLEU/METEOR if available.
+- Performs error analysis with per-sample ROUGE-1 and top-3 worst outputs.
 
-**Output Includes:**
-- Per-metric scores
-- Average generation time per sample
-- Top 3 worst predictions with reference vs. model output
-- Sample-wise ROUGE scores (for error analysis)
+Evaluation outputs:
 
----
+- Mini_Project/evaluation_results.json.
+- Mini_Project/evaluation_report.md.
 
-### 3️⃣ Run Interactive Web App
+### Run App
+
 ```bash
 streamlit run Mini_Project/app.py
 ```
 
-**Features:**
-- Enter any article text
-- Click "Summarize" to generate abstractive summary
-- Model loads once and is cached for fast inference
-- Runs on `http://localhost:8501`
+Current app behavior:
 
----
+- Loads model/tokenizer once with Streamlit cache.
+- Accepts pasted text or uploaded .txt input.
+- Exposes style and decoding controls.
+- Returns summary and basic word-count stats.
 
-## 📊 Project Details
+## Inference Pipeline (No Retraining Upgrades)
 
-### Model Architecture
-- **Type**: Sequence-to-Sequence (Encoder-Decoder)
-- **Base Model**: BART (Bidirectional Auto-Regressive Transformer)
-- **Pre-training**: Trained on large text corpus with denoising objectives
-- **Fine-tuning Task**: Abstractive summarization (article → summary)
+All runtime scripts depend on common.py, so inference behavior stays consistent across app and evaluation.
 
-### Dataset
-- **Name**: CNN/DailyMail
-- **Size Used**: 3,000 training + 800 validation + 200 test samples
-- **Features**: 
-  - `article`: Full news article (512 tokens max)
-  - `highlights`: Reference summary (128 tokens max)
-- **Domain**: News articles and their reference summaries
-- **Rationale**: Standard benchmark for summarization research
+### 1) Preprocessing
 
-### Key Improvements Over Baseline
-1. **Early Stopping**: Prevents overfitting
-2. **Learning Rate Warmup**: Stabilizes fine-tuning
-3. **Gradient Accumulation**: Better gradient estimates on low-memory systems
-4. **Frequent Evaluation**: Catches convergence issues early
-5. **Comprehensive Metrics**: ROUGE + BLEU + METEOR for thorough evaluation
-6. **Error Analysis**: Identifies failure cases for debugging
+Function: preprocess_text_for_summarization.
 
----
+- Normalizes whitespace and line breaks.
+- Converts bullet and task-like lines into prose blocks.
+- Reduces repeated punctuation artifacts.
 
-## 📈 Expected Results
+Impact:
 
-After running the full pipeline:
+- Structured inputs become easier for BART to summarize.
+- Less noisy formatting in outputs.
 
-### Training Metrics
-- Train loss: 2.0 → 1.5 (across 3 epochs)
-- Validation loss: 2.2 → 1.6 (with early stopping)
-- Training time: ~2-4 hours on GPU (longer on CPU)
+### 2) Prompting
 
-### Evaluation Metrics
-```
-ROUGE Scores:
-  rouge1: 0.38
-  rouge2: 0.18
-  rougeL: 0.35
+Function: build_summary_prompt.
 
-Generation Time: ~0.5s per article
-```
+- Adds instruction prefix targeting 3 to 4 concise sentences.
+- Adds anti-repetition guidance.
+- Adds structured-input hint for line-heavy text.
 
-### Key Outputs
-```
-Mini_Project/
-├── model/
-│   ├── pytorch_model.bin
-│   ├── config.json
-│   ├── tokenizer.json
-│   └── training_config.json
-├── results/
-│   ├── trainer_state.json
-│   └── checkpoint-*/
-└── evaluation_results.json
-```
+Impact:
 
----
+- Better compression and cleaner summaries.
 
-## 🔍 File Descriptions
+### 3) Chunk-Then-Fuse for Long Inputs
 
-### `train.py`
-Implements the fine-tuning pipeline:
-- Dataset loading and preprocessing
-- Model and tokenizer initialization
-- Training loop with Trainer API
-- Early stopping callback
-- Model checkpointing
-- Results saving
+Functions: _chunk_text_for_model and generate_summary.
 
-### `evaluate_model.py`
-Comprehensive evaluation script:
-- Test set generation with progress tracking
-- Multi-metric computation
-- Error analysis with worst predictions
-- Performance timing
-- Results persistence as JSON
+- Splits long text into overlapping token chunks.
+- Summarizes each chunk.
+- Summarizes merged chunk summaries again to produce final output.
 
-### `app.py`
-Streamlit web application:
-- User-friendly text input
-- Real-time summary generation
-- Model caching for performance
-- Clean UI with Markdown output
+Impact:
 
-### `common.py`
-Shared utilities used by all scripts:
-- Centralized model loading with device management
-- Unified summary generation function
-- Consistent path management
-- Device detection (GPU/CPU)
+- Better long-input coverage with less truncation loss.
 
----
+### 4) Multi-Candidate Reranking
 
-## 💡 Customization Options
+Functions: generate_summary and \_candidate\_score.
 
-### Change Dataset Size
-Edit `train.py` line 31-32:
-```python
-train_data = dataset["train"].select(range(5000))  # Larger dataset
-val_data = dataset["validation"].select(range(1000))
-```
+- Generates multiple candidates with varied decoding settings.
+- Scores candidates using compression fit, extractiveness penalty, sentence-count preference, and repetition penalty.
+- Selects best candidate.
 
-### Adjust Training Hyperparameters
-Edit `train.py` lines 73-91:
-```python
-learning_rate=1e-4,           # Higher LR for larger datasets
-warmup_steps=1000,            # More warmup
-num_train_epochs=5,           # More epochs
-per_device_train_batch_size=4 # Larger batch if GPU available
-```
+Impact:
 
-### Use Different Base Model
-Edit `train.py` line 46:
-```python
-model_name = "facebook/bart-base"  # Smaller, faster
-model_name = "t5-base"             # Alternative: T5 model
-model_name = "pegasus-arxiv"       # Alternative: PEGASUS
-```
+- More stable and robust quality without retraining.
 
-### Change Summary Length
-Edit `common.py` line 43:
-```python
-max_summary_length: int = 150,  # Longer summaries
-```
+### 5) De-duplication and Extractiveness Guardrail
 
----
+Functions: _deduplicate_sentences and _extractiveness_ratio.
 
-## ⚡ Performance Tips
+- Removes near-duplicate sentences.
+- If summary is too extractive, regenerates with stricter constraints.
 
-### For GPU Systems
-- Increase batch size: `per_device_train_batch_size=8`
-- Enable mixed precision: `fp16=True`
-- Use more samples: `train_data = dataset["train"].select(range(10000))`
+Impact:
 
-### For CPU Systems
-- Reduce batch size: `per_device_train_batch_size=1`
-- Reduce dataset: `train_data = dataset["train"].select(range(1000))`
-- Disable mixed precision: `fp16=False` (already auto-disabled)
+- Lower redundancy and less copy-like output.
 
-### For Memory Constraints
-- Reduce sequence lengths in preprocessing
-- Use gradient accumulation (already set to 2)
-- Enable disk-offloading in Trainer args
+### 6) GPU-Efficient Execution
 
----
+Function: _generate_once.
 
-## 📚 References
+- Uses torch.inference_mode.
+- Uses CUDA autocast fp16 when GPU is available.
 
-### Model
-- BART Paper: [Denoising Sequence-to-Sequence Pre-training for Natural Language Generation, Translation, and Comprehension](https://arxiv.org/abs/1910.13461)
-- Hugging Face Docs: https://huggingface.co/facebook/bart-large-cnn
+Impact:
 
-### Dataset
-- CNN/DailyMail: [Get To The Point: Summarization with Pointer-Generator Networks](https://arxiv.org/abs/1704.04368)
+- Better inference throughput.
 
-### Metrics
-- ROUGE: [ROUGE: A Package for Automatic Evaluation of Summaries](https://arxiv.org/abs/W04-1013)
-- BLEU: [BLEU: a Method for Automatic Evaluation of Machine Translation](https://aclanthology.org/P02-1040/)
+## App Controls
 
----
+Current sidebar controls:
 
-## ✨ Requirements Met
+- Summary style: Balanced, Crisp, Ultra-Short, Bullet Input Mode.
+- Preset lengths: Short, Medium, Long.
+- Max summary length.
+- Min summary length.
+- Beam count.
+- Candidate count for reranking.
 
-✅ **Fine-tune a pre-trained transformer**: BART (facebook/bart-large-cnn)  
-✅ **For summarization task**: Abstractive text-to-summary generation  
-✅ **On a relevant dataset**: CNN/DailyMail (standard summarization benchmark)  
-✅ **Complete pipeline**: Training → Evaluation → Inference  
-✅ **Production-ready**: Error handling, logging, metrics, caching  
+Style behavior in generate_summary:
 
----
+- balanced: default profile.
+- crisp: stronger compression and anti-repetition.
+- ultra_short: most aggressive compression.
+- bullet_mode: tuned for structured task-like text.
 
-## 🐛 Troubleshooting
+## Shared Runtime Contract
 
-### "Model directory not found"
-Run `train.py` first to create the fine-tuned model.
+- app.py and evaluate_model.py both call generate_summary from common.py.
+- load_model_and_tokenizer in common.py is the standard model-loading entry point.
+- This keeps generation behavior synchronized across scripts.
 
-### "Out of memory" error
-Reduce batch size or dataset size in `train.py`.
+## Practical Tuning (No Retraining)
 
-### Slow generation on CPU
-Use a smaller model: `facebook/bart-base` instead of `facebook/bart-large-cnn`.
+For better quality:
 
-### Missing evaluation metrics
-Some metrics may fail to download. The script gracefully continues with ROUGE.
+- Use style Crisp or Bullet Input Mode for structured inputs.
+- Keep candidate_count around 3 to 4.
+- Keep beams around 4 to 6.
 
----
+For faster responses:
 
-## 📝 License
-This project uses open-source models and datasets. See respective licenses for BART, CNN/DailyMail, and Hugging Face Transformers.
+- Set candidate_count to 1.
+- Lower beams to 2 to 4.
+- Use Balanced style.
 
+For maximum compression:
+
+- Use Ultra-Short style.
+- Lower max summary length and min summary length.
+
+## Troubleshooting
+
+Model directory not found:
+
+- Run python Mini_Project/train.py first.
+
+Out of memory during training:
+
+- Reduce per-device batch size.
+- Reduce train and validation subset size in train.py.
+
+Slow CPU inference:
+
+- Reduce beams.
+- Reduce candidate_count.
+- Reduce max summary length.
+
+Metric package issues:
+
+- ROUGE is required by evaluate_model.py.
+- BLEU and METEOR are optional and skip gracefully if unavailable.
+
+## Notes
+
+- quickstart.py is a helper script; current behavior is defined by train.py, evaluate_model.py, app.py, and common.py.
+- This README reflects the current codebase, including recent inference upgrades.
+
+## References
+
+- [BART model card](https://huggingface.co/facebook/bart-large-cnn)
+- [CNN/DailyMail dataset](https://huggingface.co/datasets/cnn_dailymail)
+- [Transformers documentation](https://huggingface.co/docs/transformers)
