@@ -80,7 +80,7 @@
 \maketitle
 
 \begin{abstract}
-    This report presents a comprehensive study on fine-tuning the BART (Bidirectional Auto-Regressive Transformer) model for abstractive text summarization. We fine-tune the pre-trained \texttt{facebook/bart-large-cnn} model on the CNN/DailyMail dataset, which contains 3,000 training articles paired with reference summaries. The project demonstrates the complete pipeline of modern NLP: dataset preparation, model fine-tuning with advanced techniques (early stopping, learning rate warmup, gradient accumulation), comprehensive evaluation using multiple metrics (ROUGE, BLEU, METEOR), and a production-ready web application for inference. Our results show ROUGE-1 scores of 0.38 on the test set, demonstrating effective transfer learning. This work serves as a practical guide for fine-tuning transformer models on sequence-to-sequence tasks, including implementation details, training optimizations, and evaluation methodologies. We achieve generation speeds of 0.5-1.0 seconds per article on GPU and provide error analysis to understand model behavior on challenging examples.
+    This report presents a practical study on fine-tuning the BART (Bidirectional Auto-Regressive Transformer) model for abstractive text summarization. We fine-tune the pre-trained \texttt{facebook/bart-large-cnn} model on the CNN/DailyMail dataset using 15,000 training articles, 3,000 validation articles, and 200 test articles. The project covers the full NLP workflow: dataset preparation, model fine-tuning with early stopping, learning rate warmup, gradient accumulation, evaluation on ROUGE metrics, and a production-ready web application for inference. On the 200-sample test set, the trained model achieves ROUGE-1 = 0.344, ROUGE-2 = 0.142, ROUGE-L = 0.251, and ROUGE-Lsum = 0.314, with an average generation time of 2.11 seconds per article on GPU. This work serves as a practical guide for fine-tuning transformer models on sequence-to-sequence tasks, including implementation details, training optimizations, metric interpretation, and error analysis.
 \end{abstract}
 
 \tableofcontents
@@ -287,7 +287,7 @@ We selected the CNN/DailyMail dataset for several reasons:
     \item \textbf{Practical Relevance}: News summarization is an important real-world application with commercial interest. Results directly apply to news aggregation and information filtering.
 \end{enumerate}
 
-For computational efficiency and to demonstrate effective transfer learning with limited data, we use subsets: 3,000 training examples (1\% of full set), 800 validation examples (1\% of full set), and 200 test examples. These subsets are sufficient to observe convergence while remaining tractable on consumer-grade hardware (6GB GPU VRAM).
+For computational efficiency and to demonstrate effective transfer learning with reduced data, we use subsets: 15,000 training examples, 3,000 validation examples, and 200 test examples. These subsets are sufficient to observe convergence while remaining tractable on consumer-grade hardware (6GB GPU VRAM).
 
 \subsection{Dataset Statistics}
 \begin{table}[H]
@@ -614,7 +614,7 @@ rouge-score & ROUGE metric computation \\
 \label{ch:results}
 
 \section{Training Results}
-Training proceeded for 3 epochs with early stopping enabled. Figure \ref{fig:training_curve} (conceptual) shows the training and validation loss trajectories.
+Training ran with evaluation and checkpoint saving every 100 steps. The logged run completed 600 update steps (0.32 epoch) in 303.11 minutes on the available GPU, and Figure \ref{fig:training_curve} (conceptual) would show the training and validation loss trajectories.
 
 \subsection{Training Metrics}
 \begin{table}[H]
@@ -623,34 +623,46 @@ Training proceeded for 3 epochs with early stopping enabled. Figure \ref{fig:tra
 \toprule
 \textbf{Metric} & \textbf{Initial Value} & \textbf{Final Value} \\
 \midrule
-Training Loss & 2.45 & 1.32 \\
-Validation Loss & 2.31 & 1.47 \\
-Training Time & --- & 2-4 hours (GPU) \\
+Training Loss & 11.60 & 11.60 \\
+Validation Loss & 3.017 & 2.917 \\
+Training Time & --- & 303.11 minutes (GPU) \\
 Learning Rate & 5e-5 & 0 (linear decay) \\
 Batch Size & 2 & 2 \\
 Total Parameters & 406M & 406M \\
-Training Steps & 0 & 1500 \\
+Training Steps & 0 & 600 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \subsection{Training Observations}
 \begin{enumerate}
-    \item Training loss decreased steadily from 2.45 to 1.32 over 1500 training steps, indicating consistent convergence
-    \item Validation loss decreased from 2.31 to 1.47, with plateau after epoch 2 indicating convergence
+    \item The evaluation loss improved from 3.017 to 2.887 early in training, then stabilized around 2.91
+    \item The run reached only 0.32 epoch before completion, so the reported metrics reflect a partial fine-tuning run rather than a full 3-epoch schedule
     \item Learning rate warmup (500 steps) stabilized early training without divergence
     \item Gradient accumulation enabled stable updates despite small batch size
-    \item Early stopping triggered at epoch 2.5, preventing overfitting
-    \item Mixed precision training provided 2-3x speedup without numerical instability
+    \item Mixed precision training reduced memory usage and enabled GPU training on the available hardware
 \end{enumerate}
 
 \subsection{Loss Analysis}
-The gap between training and validation loss (0.15 on average) suggests mild overfitting, which is expected with transfer learning on limited data. The pre-trained weights provide strong regularization, preventing severe overfitting despite training on only 3,000 examples.
+The logged training loss remained high relative to the validation loss because the run ended early, before the model had fully converged. The validation loss pattern suggests that the model was still learning useful summarization behavior, but the partial run did not reach the point where a final overfitting assessment would be reliable.
 
 \section{Evaluation Results}
 
+\subsection{Metric Definitions}
+To make the results easier to interpret, the main terms are defined below:
+\begin{itemize}
+    \item \textbf{ROUGE-1}: unigram overlap between the generated summary and the reference summary
+    \item \textbf{ROUGE-2}: bigram overlap, which is stricter than ROUGE-1 and reflects local phrase matching
+    \item \textbf{ROUGE-L}: longest common subsequence overlap, which rewards matching summary structure
+    \item \textbf{ROUGE-Lsum}: a sentence-aware variant of ROUGE-L commonly reported for summarization
+    \item \textbf{Precision}: the fraction of generated n-grams that also appear in the reference
+    \item \textbf{Recall}: the fraction of reference n-grams recovered by the generated summary
+    \item \textbf{F1}: the harmonic mean of precision and recall
+    \item \textbf{Average generation time}: mean wall-clock time to produce one summary on the test set
+\end{itemize}
+
 \subsection{ROUGE Scores}
-ROUGE is the primary metric for summarization evaluation. Our results on 200 test samples:
+ROUGE is the primary metric for summarization evaluation. Our results on 200 test samples are:
 
 \begin{table}[H]
 \centering
@@ -658,14 +670,15 @@ ROUGE is the primary metric for summarization evaluation. Our results on 200 tes
 \toprule
 \textbf{Metric} & \textbf{Precision} & \textbf{Recall} & \textbf{F1} \\
 \midrule
-ROUGE-1 & 0.41 & 0.36 & 0.38 \\
-ROUGE-2 & 0.21 & 0.17 & 0.19 \\
-ROUGE-L & 0.38 & 0.33 & 0.35 \\
+ROUGE-1 & 0.3440 & -- & -- \\
+ROUGE-2 & 0.1420 & -- & -- \\
+ROUGE-L & 0.2515 & -- & -- \\
+ROUGE-Lsum & 0.3141 & -- & -- \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-These scores are competitive with published results on CNN/DailyMail. ROUGE-1 F1 of 0.38 indicates that approximately 38\% of unigrams in our generated summaries match reference summaries.
+These scores show moderate overlap with the reference summaries. The ROUGE-1 score of 0.3440 means that roughly one-third of the important unigrams from the reference summaries are recovered by the model's outputs.
 
 \subsection{Additional Metrics}
 \begin{table}[H]
@@ -674,14 +687,14 @@ These scores are competitive with published results on CNN/DailyMail. ROUGE-1 F1
 \toprule
 \textbf{Metric} & \textbf{Score} \\
 \midrule
-BLEU & 0.28 \\
-METEOR & 0.31 \\
-Average Generation Time & 0.75s (GPU) \\
+BLEU & unavailable \\
+METEOR & unavailable \\
+Average Generation Time & 2.11s per sample (GPU) \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-BLEU score of 0.28 is reasonable for summarization (BLEU was designed for translation). METEOR score of 0.31 incorporates synonymy and phrase matching beyond ROUGE.
+BLEU and METEOR were not reported in this run because the evaluation script did not return those scores in the final saved artifacts. The average generation time of 2.11 seconds per sample reflects single-example inference on the available GPU.
 
 \section{Performance Analysis}
 
@@ -692,14 +705,14 @@ BLEU score of 0.28 is reasonable for summarization (BLEU was designed for transl
 \toprule
 \textbf{Metric} & \textbf{GPU (NVIDIA)} & \textbf{CPU} \\
 \midrule
-Generation Time Per Sample & 0.5-1.0s & 2-5s \\
-Training Time (1 epoch) & 15-20 min & 2-3 hours \\
+Generation Time Per Sample & 2.11s & not measured in this run \\
+Training Time (600 steps) & 303.11 min & not measured in this run \\
 Memory Required & 6GB VRAM & 8GB RAM \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-GPU acceleration provides 4-5x speedup for generation and 6-10x for training.
+In this environment, GPU execution was essential for practical training and inference. CPU numbers are left as system-level expectations rather than measured results because the run was performed on the NVIDIA RTX 3050 laptop GPU.
 
 \subsection{Summary Length Analysis}
 \begin{table}[H]
@@ -717,7 +730,7 @@ Std Dev (tokens) & 18.3 & 15.7 \\
 \end{tabular}
 \end{table}
 
-Generated summaries are slightly shorter (52 vs 56 tokens) and have less variance than references. The tendency toward shorter summaries suggests the model learns to be conservative in generation, preferring precision over recall.
+Generated summaries were shorter and more conservative than the reference summaries in the sampled outputs. That behavior is consistent with abstractive summarization models that prioritize fluent compression over exhaustive coverage.
 
 \chapter{Error Analysis and Discussion}
 \label{ch:analysis}
@@ -771,15 +784,15 @@ Based on error analysis, we suggest:
 \end{enumerate}
 
 \section{Comparison with Baselines}
-While we don't implement baselines in this project, published CNN/DailyMail benchmarks show:
+While we do not run a baseline comparison in this project, published CNN/DailyMail benchmarks show:
 \begin{itemize}
     \item Extractive baseline: ROUGE-1 $\approx$ 0.40
     \item BART (pre-trained, no fine-tuning): ROUGE-1 $\approx$ 0.43
     \item BART (fine-tuned, full dataset): ROUGE-1 $\approx$ 0.45
-    \item Our BART (fine-tuned, 3K samples): ROUGE-1 = 0.38
+    \item Our BART (fine-tuned, 15K samples): ROUGE-1 = 0.3440
 \end{itemize}
 
-Our results are slightly below full-dataset fine-tuning due to using only 10\% of training data, which is expected.
+Our results are below full-dataset fine-tuning because this run used a reduced training budget and stopped before a full three-epoch schedule was completed.
 
 \chapter{Discussion and Practical Considerations}
 \label{ch:discussion}
@@ -787,8 +800,8 @@ Our results are slightly below full-dataset fine-tuning due to using only 10\% o
 \section{Transfer Learning Effectiveness}
 Our results demonstrate the effectiveness of transfer learning for summarization:
 \begin{enumerate}
-    \item Pre-training on large corpora enables learning with only 3,000 task-specific examples
-    \item Fine-tuning achieves competitive ROUGE scores without extensive data
+    \item Pre-training on large corpora enables learning with a relatively small task-specific dataset
+    \item Fine-tuning achieves usable ROUGE scores without full-scale retraining from scratch
     \item Careful hyperparameter selection (learning rate, warmup, early stopping) is crucial
     \item Domain-specific pre-training (BART-cnn) provides additional benefits
 \end{enumerate}
@@ -796,8 +809,8 @@ Our results demonstrate the effectiveness of transfer learning for summarization
 \section{Computational Efficiency}
 Fine-tuning considerations:
 \begin{itemize}
-    \item \textbf{Training Cost}: 2-4 GPU hours, $\approx$ 10-50 CPU hours
-    \item \textbf{Inference Cost}: 0.5-1.0 seconds per article on GPU
+    \item \textbf{Training Cost}: 303.11 minutes on GPU for the logged run
+    \item \textbf{Inference Cost}: 2.11 seconds per article on GPU
     \item \textbf{Memory Usage}: 6GB VRAM for batch size 2, or 8-12GB RAM on CPU
     \item \textbf{Scalability}: Batch processing could enable faster throughput
 \end{itemize}
@@ -845,19 +858,19 @@ Our implementation addresses these through:
 This project demonstrates a complete pipeline for fine-tuning transformer models for abstractive summarization:
 
 \begin{enumerate}
-    \item We successfully fine-tuned BART on the CNN/DailyMail dataset, achieving ROUGE-1 F1 of 0.38
+    \item We fine-tuned BART on the CNN/DailyMail dataset and obtained ROUGE-1 = 0.3440 on the 200-sample test set
     \item We implemented advanced training techniques: early stopping, learning rate warmup, gradient accumulation, and mixed precision
-    \item We performed comprehensive evaluation using multiple metrics (ROUGE, BLEU, METEOR) and error analysis
+    \item We performed comprehensive evaluation using ROUGE metrics, inference timing, and error analysis
     \item We developed a production-ready web application using Streamlit
     \item We provided detailed implementation documentation for reproducibility
 \end{enumerate}
 
 \section{Key Findings}
 \begin{itemize}
-    \item Transfer learning enables effective fine-tuning with limited task-specific data (3,000 examples)
+    \item Transfer learning enables effective fine-tuning with limited task-specific data
     \item BART-large-cnn pre-training on news provides good initialization for summarization
-    \item Learning rate scheduling and early stopping prevent overfitting and reduce training time
-    \item Multiple evaluation metrics provide more complete assessment than ROUGE alone
+    \item Learning rate scheduling and gradient accumulation improve training stability on limited GPU memory
+    \item ROUGE provides a compact overlap-based view of summary quality, but qualitative error analysis is still necessary
     \item Error analysis reveals that multi-topic articles and domain-specific content are challenging
 \end{itemize}
 
