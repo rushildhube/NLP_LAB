@@ -117,6 +117,21 @@ with st.sidebar:
 
     st.divider()
     st.subheader("Summary size")
+    summary_style_label = st.selectbox(
+        "Summary style",
+        ["Balanced", "Crisp", "Ultra-Short", "Bullet Input Mode"],
+        index=0,
+        help="Balanced = general use, Crisp = tighter wording, Ultra-Short = maximum compression, Bullet Input Mode = better for task lists.",
+    )
+
+    style_map = {
+        "Balanced": "balanced",
+        "Crisp": "crisp",
+        "Ultra-Short": "ultra_short",
+        "Bullet Input Mode": "bullet_mode",
+    }
+    summary_style = style_map[summary_style_label]
+
     preset = st.selectbox("Preset", ["Short", "Medium", "Long"], index=1, help="Quick presets: Short = concise, Medium = balanced, Long = more detail")
     if preset == "Short":
         max_summary_default = 60
@@ -148,6 +163,13 @@ with st.sidebar:
         8,
         4,
         help="Higher beams improve quality but increase generation time; 1 is fastest.",
+    )
+    candidate_count = st.slider(
+        "Candidates (reranking)",
+        1,
+        5,
+        3,
+        help="Generate multiple candidates and pick the best. Higher values can improve quality but are slower.",
     )
 
     st.divider()
@@ -200,6 +222,8 @@ if generate:
                     max_summary_length=max_summary_length,
                     min_summary_length=min_summary_length,
                     num_beams=num_beams,
+                    candidate_count=candidate_count,
+                    summary_style=summary_style,
                 )
                 logger.info("Summary generation complete: summary_words=%d", len(summary.split()))
                 st.subheader("Result")
