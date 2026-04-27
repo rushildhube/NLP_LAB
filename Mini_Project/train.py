@@ -207,13 +207,12 @@ def main():
             padding="max_length",
         )
 
-        with tokenizer.as_target_tokenizer():
-            targets = tokenizer(
-                examples["highlights"],
-                max_length=128,
-                truncation=True,
-                padding="max_length",
-            )
+        targets = tokenizer(
+            text_target=examples["highlights"],
+            max_length=128,
+            truncation=True,
+            padding="max_length",
+        )
 
         # Replace padding token ids in labels with -100 so loss ignores them.
         # Using a list comprehension (not tensor ops) because this runs pre-collation on CPU.
