@@ -40,9 +40,11 @@ def main():
         tokenizer, model, device = load_model_and_tokenizer()
         logger.info(f"Model loaded on device: {device}")
         if hasattr(model, "generation_config"):
-            model.generation_config.max_length = 130
-            model.generation_config.min_length = 45
-            model.generation_config.num_beams = 5
+            model.generation_config.max_length = 110
+            model.generation_config.min_length = 28
+            model.generation_config.num_beams = 6
+            model.generation_config.no_repeat_ngram_size = 4
+            model.generation_config.repetition_penalty = 1.25
     except Exception as e:
         logger.error(f"Failed to load model: {e}")
         raise
@@ -90,11 +92,13 @@ def main():
                 tokenizer=tokenizer,
                 model=model,
                 device=device,
-                max_summary_length=130,
-                min_summary_length=45,
-                num_beams=5,
-                length_penalty=1.15,
-                repetition_penalty=1.1,
+                max_summary_length=110,
+                min_summary_length=28,
+                num_beams=6,
+                length_penalty=1.35,
+                no_repeat_ngram_size=4,
+                repetition_penalty=1.25,
+                encoder_no_repeat_ngram_size=3,
             )
             gen_time = time.time() - gen_start
             generation_times.append(gen_time)
